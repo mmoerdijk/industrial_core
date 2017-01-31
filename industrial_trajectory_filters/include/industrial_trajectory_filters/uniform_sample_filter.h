@@ -94,6 +94,7 @@ template<typename T>
      * @brief uniform sample duration (sec)
      */
     double sample_duration_;
+    double duration_scaling_;
   };
 
 /**

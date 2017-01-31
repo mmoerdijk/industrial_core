@@ -43,6 +43,7 @@ template<typename T>
   {
     ROS_INFO_STREAM("Constructing N point filter");
     sample_duration_ = DEFAULT_SAMPLE_DURATION;
+    duration_scaling_ = 0.5 ;
     this->filter_name_ = "UniformSampleFilter";
     this->filter_type_ = "UniformSampleFilter";
   }
@@ -60,6 +61,7 @@ template<typename T>
       ROS_WARN_STREAM( "UniformSampleFilter, params has no attribute sample_duration.");
     }
     ROS_INFO_STREAM("Using a sample_duration value of " << sample_duration_);
+    ROS_INFO_STREAM("Using a duration scaling of value of " << duration_scaling_);
 
     return true;
   }
@@ -69,13 +71,58 @@ template<typename T>
   {
     bool success = false;
     size_t size_in = trajectory_in.request.trajectory.points.size();
-    double duration_in = trajectory_in.request.trajectory.points.back().time_from_start.toSec();
+    double old_time_in = trajectory_in.request.trajectory.points.back().time_from_start.toSec() ;
+    //ROS_ERROR_STREAM("Old time: " <<  old_time_in );
+    this->nh_.getParam("/festo/config/duration_scaling",duration_scaling_);
+    ROS_ERROR_STREAM("Duration scaling factor " << duration_scaling_ );
+
+    T trajectory_scaled ;
+    trajectory_scaled = trajectory_in;
+
+    if(duration_scaling_ < 1 && duration_scaling_ >= 0.1 )
+    {
+      // Retime trajectory
+      for(int it=0;it<size_in;it++){
+
+        double old_time, new_time ;
+        // Scale time
+        old_time = trajectory_in.request.trajectory.points[it].time_from_start.toNSec();
+        new_time = old_time/this->duration_scaling_ ;
+        int num_joints = trajectory_in.request.trajectory.points[it].velocities.size();
+
+        for(int itt =0 ; itt < num_joints; itt++ ){
+
+
+          // Scale speed
+          trajectory_scaled.request.trajectory.points[it].velocities[itt] *= duration_scaling_ ;
+
+          // Scale acceleration
+          trajectory_scaled.request.trajectory.points[it].accelerations[itt] *= duration_scaling_*duration_scaling_ ;
+
+        }
+        //trajectory_scaled.request.trajectory.points[it].velocities[num_joints-1] = 0 ;
+        //trajectory_scaled.request.trajectory.points[it].accelerations[num_joints-1] = 0;
+
+
+        //ros::Duration new_time_from_start(new_time);
+        trajectory_scaled.request.trajectory.points[it].time_from_start.fromNSec(new_time)  ;
+
+        //ROS_ERROR_STREAM("Point old value " << old_time << " new value " << new_time);
+
+
+      }
+    }
+
+
+
+    // Interpolate trajetory
+    double duration_in = trajectory_scaled.request.trajectory.points.back().time_from_start.toSec() ;
     double interpolated_time = 0.0;
     size_t index_in = 0;
 
     trajectory_msgs::JointTrajectoryPoint p1, p2, interp_pt;
 
-    trajectory_out = trajectory_in;
+    trajectory_out = trajectory_scaled;
 
     // Clear out the trajectory points
     trajectory_out.request.trajectory.points.clear();
@@ -84,10 +131,10 @@ template<typename T>
     {
       ROS_DEBUG_STREAM("Interpolated time: " << interpolated_time);
       // Increment index until the interpolated time is past the start time.
-      while (interpolated_time > trajectory_in.request.trajectory.points[index_in + 1].time_from_start.toSec())
+      while (interpolated_time > trajectory_scaled.request.trajectory.points[index_in + 1].time_from_start.toSec())
       {
         ROS_DEBUG_STREAM(
-            "Interpolated time: " << interpolated_time << ", next point time: " << (trajectory_in.request.trajectory.points[index_in + 1].time_from_start.toSec()));
+            "Interpolated time: " << interpolated_time << ", next point time: " << (trajectory_scaled.request.trajectory.points[index_in + 1].time_from_start.toSec()));
         ROS_DEBUG_STREAM("Incrementing index");
         index_in++;
         if (index_in >= size_in)
@@ -97,8 +144,8 @@ template<typename T>
           return false;
         }
       }
-      p1 = trajectory_in.request.trajectory.points[index_in];
-      p2 = trajectory_in.request.trajectory.points[index_in + 1];
+      p1 = trajectory_scaled.request.trajectory.points[index_in];
+      p2 = trajectory_scaled.request.trajectory.points[index_in + 1];
       if (!interpolatePt(p1, p2, interpolated_time, interp_pt))
       {
         ROS_ERROR_STREAM("Failed to interpolate point");
@@ -111,7 +158,7 @@ template<typename T>
 
     ROS_INFO_STREAM(
         "Interpolated time exceeds original trajectory (quitting), original: " << duration_in << " final interpolated time: " << interpolated_time);
-    p2 = trajectory_in.request.trajectory.points.back();
+    p2 = trajectory_scaled.request.trajectory.points.back();
     p2.time_from_start = ros::Duration(interpolated_time);
     // TODO: Really should check that appending the last point doesn't result in
     // really slow motion at the end.  This could happen if the sample duration is a
@@ -119,7 +166,7 @@ template<typename T>
     trajectory_out.request.trajectory.points.push_back(p2);
 
     ROS_INFO_STREAM(
-        "Uniform sampling, resample duraction: " << sample_duration_ << " input traj. size: " << trajectory_in.request.trajectory.points.size() << " output traj. size: " << trajectory_out.request.trajectory.points.size());
+        "Uniform sampling, resample duraction: " << sample_duration_ << " input traj. size: " << trajectory_scaled.request.trajectory.points.size() << " output traj. size: " << trajectory_out.request.trajectory.points.size());
 
     success = true;
     return success;
